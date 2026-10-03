@@ -1,0 +1,88 @@
+name: Build Cudy TR3600 OpenWrt + NFQUEUE
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout TR3600 support repo
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential flex bison gawk gettext git \
+            libncurses-dev libssl-dev rsync unzip zlib1g-dev \
+            file wget xz-utils libelf-dev python3-setuptools \
+            swig curl ca-certificates
+
+      - name: Clone OpenWrt and apply TR3600 support
+        run: |
+          git clone -b openwrt-25.12 --depth 1 \
+            https://github.com/openwrt/openwrt.git openwrt
+
+          cd openwrt
+
+          git fetch origin pull/24596/head
+          git checkout -f FETCH_HEAD
+
+          git apply ../cudy-tr3600-v1-fixes.patch
+
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure firmware
+        run: |
+          cd openwrt
+
+          cat > .config <<'EOF'
+          CONFIG_TARGET_mediatek=y
+          CONFIG_TARGET_mediatek_filogic=y
+          CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y
+
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-ssl=y
+          CONFIG_PACKAGE_luci-app-package-manager=y
+          CONFIG_PACKAGE_luci-app-firewall=y
+
+          CONFIG_PACKAGE_kmod-nft-queue=y
+          CONFIG_PACKAGE_kmod-nfnetlink-queue=y
+
+          CONFIG_PACKAGE_kmod-tun=y
+          CONFIG_PACKAGE_ip-full=y
+          EOF
+
+          make defconfig
+
+          echo "=== NFQUEUE CONFIG ==="
+          grep -E 'CONFIG_PACKAGE_(kmod-nft-queue|kmod-nfnetlink-queue)' .config
+
+          echo "=== TR3600 CONFIG ==="
+          grep 'CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3600-v1=y' .config
+
+      - name: Download sources
+        run: |
+          cd openwrt
+          make -j$(nproc) download
+
+      - name: Build firmware
+        run: |
+          cd openwrt
+          make -j$(nproc)
+
+      - name: Show firmware
+        run: |
+          ls -lh openwrt/bin/targets/mediatek/filogic/
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: cudy-tr3600-openwrt-nfqueue
+          path: |
+            openwrt/bin/targets/mediatek/filogic/*cudy_tr3600-v1*
+            openwrt/bin/targets/mediatek/filogic/sha256sums
+          if-no-files-found: error
